@@ -23,9 +23,7 @@ async fn test_db_connection(
         .await;
 
     match result {
-        Ok(_) => Ok(
-            "Successfully connected to Vendora MySQL database!".to_string()
-        ),
+        Ok(_) => Ok("Successfully connected to Vendora MySQL database!".to_string()),
         Err(error) => Err(format!("Database query failed: {}", error)),
     }
 }
@@ -66,6 +64,47 @@ async fn login_user(
     auth::login(pool.inner(), username, password).await
 }
 
+// ITEM CATALOG
+
+#[tauri::command]
+async fn get_items(
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<Vec<items::Item>, String> {
+    items::get_items(pool.inner()).await
+}
+
+#[tauri::command]
+async fn get_available_items(
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<Vec<items::Item>, String> {
+    items::get_available_items(pool.inner()).await
+}
+
+#[tauri::command]
+async fn add_item(
+    item: items::ItemInput,
+    created_by: Option<u64>,
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<u64, String> {
+    items::add_item(pool.inner(), item, created_by).await
+}
+
+#[tauri::command]
+async fn update_item(
+    id: u64,
+    item: items::ItemInput,
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<(), String> {
+    items::update_item(pool.inner(), id, item).await
+}
+
+#[tauri::command]
+async fn get_item_summary(
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<items::ItemSummary, String> {
+    items::get_item_summary(pool.inner()).await
+}
+
 // PRODUCTS
 
 #[tauri::command]
@@ -77,30 +116,18 @@ async fn get_products(
 
 #[tauri::command]
 async fn add_product(
-    product_name: String,
-    sku: Option<String>,
-    barcode: Option<String>,
-    description: Option<String>,
-    category: Option<String>,
+    item_id: u64,
     cost_price: Decimal,
     selling_price: Decimal,
-    unit: String,
-    quantity: Decimal,
     minimum_stock: Decimal,
     created_by: Option<u64>,
     pool: tauri::State<'_, MySqlPool>,
 ) -> Result<u64, String> {
     products::add_product(
         pool.inner(),
-        product_name,
-        sku,
-        barcode,
-        description,
-        category,
+        item_id,
         cost_price,
         selling_price,
-        unit,
-        quantity,
         minimum_stock,
         created_by,
     )
@@ -158,14 +185,12 @@ async fn get_pos_products(
     sales::get_pos_products(pool.inner()).await
 }
 
-
 #[tauri::command]
 async fn get_today_sales(
     pool: tauri::State<'_, MySqlPool>,
 ) -> Result<Vec<sales::SaleHistory>, String> {
     sales::get_today_sales(pool.inner()).await
 }
-
 
 #[tauri::command]
 async fn complete_sale(
@@ -226,10 +251,13 @@ pub fn run() {
             has_admin_account,
             create_initial_admin,
             login_user,
+
             get_items,
+            get_available_items,
             add_item,
             update_item,
             get_item_summary,
+
             get_products,
             add_product,
             update_product,
@@ -242,40 +270,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Vendora");
 }
-
-
-
- // ITEM CATALOG
-
-#[tauri::command]
-async fn get_items(
-    pool: tauri::State<'_, MySqlPool>,
-) -> Result<Vec<items::Item>, String> {
-    items::get_items(pool.inner()).await
-}
-
-#[tauri::command]
-async fn add_item(
-    item: items::ItemInput,
-    created_by: Option<u64>,
-    pool: tauri::State<'_, MySqlPool>,
-) -> Result<u64, String> {
-    items::add_item(pool.inner(), item, created_by).await
-}
-
-#[tauri::command]
-async fn update_item(
-    id: u64,
-    item: items::ItemInput,
-    pool: tauri::State<'_, MySqlPool>,
-) -> Result<(), String> {
-    items::update_item(pool.inner(), id, item).await
-}
-
-#[tauri::command]
-async fn get_item_summary(
-    pool: tauri::State<'_, MySqlPool>,
-) -> Result<items::ItemSummary, String> {
-    items::get_item_summary(pool.inner()).await
-}
-

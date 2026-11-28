@@ -19,33 +19,30 @@ interface Product {
   status: string;
 }
 
+interface Item {
+  id: number;
+  item_name: string;
+  sku: string | null;
+  barcode: string | null;
+  description: string | null;
+  category: string | null;
+  unit: string;
+  status: string;
+}
+
 interface ProductsProps {
   user: AuthenticatedUser;
 }
 
 interface ProductForm {
-  productName: string;
-  sku: string;
-  barcode: string;
-  description: string;
-  category: string;
   costPrice: string;
   sellingPrice: string;
-  unit: string;
-  quantity: string;
   minimumStock: string;
 }
 
 const emptyForm: ProductForm = {
-  productName: "",
-  sku: "",
-  barcode: "",
-  description: "",
-  category: "",
   costPrice: "0",
   sellingPrice: "0",
-  unit: "pcs",
-  quantity: "0",
   minimumStock: "5",
 };
 
@@ -73,11 +70,20 @@ function getStockStatus(product: Product) {
 
 export default function Products({ user }: ProductsProps) {
   const [products, setProducts] = useState<Product[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
+  const [selectedItem, setSelectedItem] = useState<Item | null>(null);
+
   const [search, setSearch] = useState("");
+  const [itemSearch, setItemSearch] = useState("");
+  const [showItemOptions, setShowItemOptions] = useState(false);
+
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<ProductForm>(emptyForm);
+
   const [loading, setLoading] = useState(true);
+  const [loadingItems, setLoadingItems] = useState(false);
   const [saving, setSaving] = useState(false);
+
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -92,6 +98,22 @@ export default function Products({ user }: ProductsProps) {
       setError(String(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadAvailableItems() {
+    try {
+      setLoadingItems(true);
+      setError("");
+
+      // This command returns active catalog items that are not
+      // already linked to a product.
+      const result = await invoke<Item[]>("get_available_items");
+      setItems(result);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoadingItems(false);
     }
   }
 
@@ -114,12 +136,31 @@ export default function Products({ user }: ProductsProps) {
     );
   }, [products, search]);
 
+  const filteredItems = useMemo(() => {
+    const term = itemSearch.trim().toLowerCase();
+
+    return items.filter((item) => {
+      if (item.status.toLowerCase() !== "active") return false;
+
+      if (!term) return true;
+
+      return [
+        item.item_name,
+        item.sku ?? "",
+        item.barcode ?? "",
+        item.category ?? "",
+      ].some((value) => value.toLowerCase().includes(term));
+    });
+  }, [items, itemSearch]);
+
   const totalProducts = products.length;
+
   const lowStockCount = products.filter(
     (product) =>
       Number(product.quantity) > 0 &&
       Number(product.quantity) <= Number(product.minimum_stock)
   ).length;
+
   const outOfStockCount = products.filter(
     (product) => Number(product.quantity) <= 0
   ).length;
@@ -134,33 +175,54 @@ export default function Products({ user }: ProductsProps) {
     }));
   }
 
+  function resetModal() {
+    setSelectedItem(null);
+    setItemSearch("");
+    setShowItemOptions(false);
+    setForm(emptyForm);
+    setError("");
+  }
+
+  function openModal() {
+    setError("");
+    setSuccess("");
+    resetModal();
+    setShowModal(true);
+    void loadAvailableItems();
+  }
+
   function closeModal() {
     if (saving) return;
 
     setShowModal(false);
-    setForm(emptyForm);
+    resetModal();
+  }
+
+  function selectItem(item: Item) {
+    setSelectedItem(item);
+    setItemSearch(item.item_name);
+    setShowItemOptions(false);
     setError("");
   }
 
   async function handleAddProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!form.productName.trim()) {
-      setError("Please enter a product name.");
+    if (!selectedItem) {
+      setError("Please select an item from the Item Catalog.");
       return;
     }
 
     const costPrice = Number(form.costPrice);
     const sellingPrice = Number(form.sellingPrice);
-    const quantity = Number(form.quantity);
     const minimumStock = Number(form.minimumStock);
 
     if (
-      ![costPrice, sellingPrice, quantity, minimumStock].every(
+      ![costPrice, sellingPrice, minimumStock].every(
         (value) => Number.isFinite(value) && value >= 0
       )
     ) {
-      setError("Prices and stock values must be valid non-negative numbers.");
+      setError("Prices and minimum stock must be valid non-negative numbers.");
       return;
     }
 
@@ -169,21 +231,15 @@ export default function Products({ user }: ProductsProps) {
       setError("");
 
       await invoke<number>("add_product", {
-        productName: form.productName.trim(),
-        sku: form.sku.trim() || null,
-        barcode: form.barcode.trim() || null,
-        description: form.description.trim() || null,
-        category: form.category.trim() || null,
+        itemId: selectedItem.id,
         costPrice,
         sellingPrice,
-        unit: form.unit,
-        quantity,
         minimumStock,
         createdBy: user.id,
       });
 
       setShowModal(false);
-      setForm(emptyForm);
+      resetModal();
       setSuccess("Product added successfully.");
 
       await loadProducts();
@@ -205,11 +261,7 @@ export default function Products({ user }: ProductsProps) {
 
         <button
           className="product-add-button"
-          onClick={() => {
-            setError("");
-            setSuccess("");
-            setShowModal(true);
-          }}
+          onClick={openModal}
         >
           <span>＋</span> Add Product
         </button>
@@ -314,20 +366,25 @@ export default function Products({ user }: ProductsProps) {
                           )}
                         </div>
                       </td>
+
                       <td>{product.sku || "—"}</td>
                       <td>{product.category || "Uncategorized"}</td>
                       <td>₱{formatAmount(product.cost_price)}</td>
+
                       <td className="product-selling-price">
                         ₱{formatAmount(product.selling_price)}
                       </td>
+
                       <td>
                         {formatAmount(product.quantity)} {product.unit}
                       </td>
+
                       <td>
                         <span className={`stock-badge ${stock.className}`}>
                           {stock.label}
                         </span>
                       </td>
+
                       <td>
                         <span
                           className={`product-status ${
@@ -349,6 +406,7 @@ export default function Products({ user }: ProductsProps) {
 
         <div className="products-table-footer">
           Showing {filteredProducts.length} of {totalProducts} products
+
           <button onClick={() => void loadProducts()} disabled={loading}>
             ↻ Refresh
           </button>
@@ -364,7 +422,7 @@ export default function Products({ user }: ProductsProps) {
             <div className="product-modal-header">
               <div>
                 <h3>Add Product</h3>
-                <p>Enter the details for your new product.</p>
+                <p>Select a catalog item and configure its pricing.</p>
               </div>
 
               <button
@@ -383,67 +441,103 @@ export default function Products({ user }: ProductsProps) {
                 {error && <div className="products-error">{error}</div>}
 
                 <div className="product-form-section">
-                  <h4>Basic Information</h4>
+                  <h4>Item Catalog</h4>
 
                   <div className="product-form-grid">
-                    <div className="product-field full">
-                      <label>Product Name *</label>
-                      <input
-                        value={form.productName}
-                        onChange={(event) =>
-                          updateField("productName", event.target.value)
-                        }
-                        placeholder="Enter product name"
-                        required
-                        autoFocus
-                      />
-                    </div>
+                    <div className="product-field full product-item-selector">
+                      <label>Select Catalog Item *</label>
 
-                    <div className="product-field">
-                      <label>SKU</label>
                       <input
-                        value={form.sku}
-                        onChange={(event) =>
-                          updateField("sku", event.target.value)
-                        }
-                        placeholder="e.g. PROD-001"
+                        type="text"
+                        value={itemSearch}
+                        onChange={(event) => {
+                          setItemSearch(event.target.value);
+                          setSelectedItem(null);
+                          setShowItemOptions(true);
+                        }}
+                        onFocus={() => setShowItemOptions(true)}
+                        placeholder="Search item name, SKU or barcode..."
+                        autoComplete="off"
+                        disabled={loadingItems || saving}
                       />
-                    </div>
 
-                    <div className="product-field">
-                      <label>Barcode</label>
-                      <input
-                        value={form.barcode}
-                        onChange={(event) =>
-                          updateField("barcode", event.target.value)
-                        }
-                        placeholder="Enter barcode"
-                      />
-                    </div>
+                      {showItemOptions && (
+                        <div className="product-item-options">
+                          {loadingItems ? (
+                            <div className="product-item-option-empty">
+                              Loading catalog items...
+                            </div>
+                          ) : filteredItems.length === 0 ? (
+                            <div className="product-item-option-empty">
+                              {items.length === 0
+                                ? "No available catalog items. Register an item first."
+                                : "No matching catalog items found."}
+                            </div>
+                          ) : (
+                            filteredItems.map((item) => (
+                              <button
+                                type="button"
+                                key={item.id}
+                                className="product-item-option"
+                                onClick={() => selectItem(item)}
+                              >
+                                <span>
+                                  <strong>{item.item_name}</strong>
+                                  <small>
+                                    {item.sku
+                                      ? `SKU: ${item.sku}`
+                                      : "No SKU"}
+                                    {item.barcode
+                                      ? ` · Barcode: ${item.barcode}`
+                                      : ""}
+                                  </small>
+                                </span>
 
-                    <div className="product-field full">
-                      <label>Category</label>
-                      <input
-                        value={form.category}
-                        onChange={(event) =>
-                          updateField("category", event.target.value)
-                        }
-                        placeholder="e.g. Electronics"
-                      />
-                    </div>
-
-                    <div className="product-field full">
-                      <label>Description</label>
-                      <textarea
-                        value={form.description}
-                        onChange={(event) =>
-                          updateField("description", event.target.value)
-                        }
-                        placeholder="Optional product description"
-                        rows={3}
-                      />
+                                <span className="product-item-option-category">
+                                  {item.category || "Uncategorized"}
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
+
+                  {selectedItem && (
+                    <div className="product-selected-item">
+                      <div className="product-selected-item-heading">
+                        <span>Selected Catalog Item</span>
+                        <strong>{selectedItem.item_name}</strong>
+                      </div>
+
+                      <div className="product-selected-item-details">
+                        <div>
+                          <small>SKU</small>
+                          <strong>{selectedItem.sku || "—"}</strong>
+                        </div>
+
+                        <div>
+                          <small>Barcode</small>
+                          <strong>{selectedItem.barcode || "—"}</strong>
+                        </div>
+
+                        <div>
+                          <small>Category</small>
+                          <strong>{selectedItem.category || "—"}</strong>
+                        </div>
+
+                        <div>
+                          <small>Unit</small>
+                          <strong>{selectedItem.unit}</strong>
+                        </div>
+                      </div>
+
+                      {selectedItem.description && (
+                        <p>{selectedItem.description}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="product-form-section">
@@ -481,47 +575,15 @@ export default function Products({ user }: ProductsProps) {
                 </div>
 
                 <div className="product-form-section">
-                  <h4>Initial Inventory</h4>
+                  <h4>Inventory Settings</h4>
 
                   <div className="product-form-grid">
-                    <div className="product-field">
-                      <label>Unit *</label>
-                      <select
-                        value={form.unit}
-                        onChange={(event) =>
-                          updateField("unit", event.target.value)
-                        }
-                      >
-                        <option value="pcs">Pieces (pcs)</option>
-                        <option value="box">Box</option>
-                        <option value="set">Set</option>
-                        <option value="meter">Meter</option>
-                        <option value="feet">Feet</option>
-                        <option value="kilo">Kilo</option>
-                        <option value="pairs">Pairs</option>
-                      </select>
-                    </div>
-
-                    <div className="product-field">
-                      <label>Initial Quantity *</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={form.quantity}
-                        onChange={(event) =>
-                          updateField("quantity", event.target.value)
-                        }
-                        required
-                      />
-                    </div>
-
                     <div className="product-field">
                       <label>Minimum Stock Level *</label>
                       <input
                         type="number"
                         min="0"
-                        step="0.01"
+                        step="0.001"
                         value={form.minimumStock}
                         onChange={(event) =>
                           updateField("minimumStock", event.target.value)
@@ -530,6 +592,11 @@ export default function Products({ user }: ProductsProps) {
                       />
                     </div>
                   </div>
+
+                  <p className="product-inventory-note">
+                    Initial quantity will be zero. Use Stock Entry to record
+                    incoming inventory.
+                  </p>
                 </div>
               </div>
 
@@ -546,7 +613,7 @@ export default function Products({ user }: ProductsProps) {
                 <button
                   type="submit"
                   className="product-save-button"
-                  disabled={saving}
+                  disabled={saving || loadingItems || !selectedItem}
                 >
                   {saving ? "Saving..." : "Save Product"}
                 </button>

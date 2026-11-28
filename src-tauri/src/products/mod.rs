@@ -1,6 +1,9 @@
+
 use rust_decimal::Decimal;
 use serde::Serialize;
 use sqlx::MySqlPool;
+
+use crate::items::Item;
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Product {
@@ -57,6 +60,8 @@ fn validate_product(
     Ok(())
 }
 
+// GET ALL PRODUCTS
+
 pub async fn get_products(pool: &MySqlPool) -> Result<Vec<Product>, String> {
     sqlx::query_as::<_, Product>(
         r#"
@@ -76,44 +81,147 @@ pub async fn get_products(pool: &MySqlPool) -> Result<Vec<Product>, String> {
             status
         FROM products
         ORDER BY product_name ASC
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await
     .map_err(|error| format!("Could not load products: {}", error))
 }
 
+// GET CATALOG ITEMS NOT YET ADDED AS PRODUCTS
+
+pub async fn get_available_items(
+    pool: &MySqlPool,
+) -> Result<Vec<Item>, String> {
+    sqlx::query_as::<_, Item>(
+        r#"
+        SELECT
+            i.id,
+            i.item_name,
+            i.sku,
+            i.barcode,
+            i.description,
+            i.category,
+            i.unit,
+            i.status
+        FROM items i
+        LEFT JOIN products p ON p.item_id = i.id
+        WHERE i.status = 'active'
+          AND p.id IS NULL
+        ORDER BY i.item_name ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|error| {
+        format!("Could not load available catalog items: {}", error)
+    })
+}
+
+// ADD PRODUCT FROM EXISTING CATALOG ITEM
+
 pub async fn add_product(
     pool: &MySqlPool,
-    product_name: String,
-    sku: Option<String>,
-    barcode: Option<String>,
-    description: Option<String>,
-    category: Option<String>,
+    item_id: u64,
     cost_price: Decimal,
     selling_price: Decimal,
-    unit: String,
-    quantity: Decimal,
     minimum_stock: Decimal,
     created_by: Option<u64>,
 ) -> Result<u64, String> {
+    if cost_price < Decimal::ZERO || selling_price < Decimal::ZERO {
+        return Err("Product prices cannot be negative.".to_string());
+    }
+
+    if minimum_stock < Decimal::ZERO {
+        return Err("Minimum stock cannot be negative.".to_string());
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| {
+            format!("Could not start product registration: {}", error)
+        })?;
+
+    let item = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        ),
+    >(
+        r#"
+        SELECT
+            item_name,
+            sku,
+            barcode,
+            description,
+            category,
+            unit,
+            status
+        FROM items
+        WHERE id = ?
+        FOR UPDATE
+        "#,
+    )
+    .bind(item_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| {
+        format!("Could not retrieve catalog item: {}", error)
+    })?;
+
+    let (
+        product_name,
+        sku,
+        barcode,
+        description,
+        category,
+        unit,
+        item_status,
+    ) = item.ok_or_else(|| {
+        "The selected catalog item does not exist.".to_string()
+    })?;
+
+    if item_status != "active" {
+        return Err(
+            "Inactive catalog items cannot be added as products.".to_string()
+        );
+    }
+
+    let existing_product = sqlx::query_scalar::<_, u64>(
+        "SELECT id FROM products WHERE item_id = ? LIMIT 1",
+    )
+    .bind(item_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| {
+        format!("Could not check existing product: {}", error)
+    })?;
+
+    if existing_product.is_some() {
+        return Err(
+            "This catalog item has already been added as a product.".to_string()
+        );
+    }
+
     validate_product(
         &product_name,
         cost_price,
         selling_price,
-        quantity,
+        Decimal::ZERO,
         minimum_stock,
     )?;
-
-    let unit = unit.trim().to_string();
-
-    if unit.is_empty() || unit.len() > 30 {
-        return Err("Please enter a valid unit of measurement.".to_string());
-    }
 
     let result = sqlx::query(
         r#"
         INSERT INTO products (
+            item_id,
             product_name,
             sku,
             barcode,
@@ -124,28 +232,44 @@ pub async fn add_product(
             unit,
             quantity,
             minimum_stock,
+            status,
             created_by
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'active', ?)
+        "#,
     )
-    .bind(product_name.trim())
-    .bind(clean_optional(sku))
-    .bind(clean_optional(barcode))
-    .bind(clean_optional(description))
-    .bind(clean_optional(category))
+    .bind(item_id)
+    .bind(product_name)
+    .bind(sku)
+    .bind(barcode)
+    .bind(description)
+    .bind(category)
     .bind(cost_price)
     .bind(selling_price)
     .bind(unit)
-    .bind(quantity)
     .bind(minimum_stock)
     .bind(created_by)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
-    .map_err(|error| format!("Could not add product. Check whether its SKU or barcode already exists. Details: {}", error))?;
+    .map_err(|error| {
+        format!(
+            "Could not add product. Check whether its SKU or barcode already exists. Details: {}",
+            error
+        )
+    })?;
 
-    Ok(result.last_insert_id())
+    let product_id = result.last_insert_id();
+
+    tx.commit()
+        .await
+        .map_err(|error| {
+            format!("Could not finish product registration: {}", error)
+        })?;
+
+    Ok(product_id)
 }
+
+// UPDATE PRODUCT
 
 pub async fn update_product(
     pool: &MySqlPool,
@@ -170,14 +294,68 @@ pub async fn update_product(
         minimum_stock,
     )?;
 
+    let product_name = product_name.trim().to_string();
+    let sku = clean_optional(sku);
+    let barcode = clean_optional(barcode);
+    let description = clean_optional(description);
+    let category = clean_optional(category);
     let unit = unit.trim().to_string();
 
     if unit.is_empty() || unit.len() > 30 {
-        return Err("Please enter a valid unit of measurement.".to_string());
+        return Err(
+            "Please enter a valid unit of measurement.".to_string()
+        );
     }
 
     if status != "active" && status != "inactive" {
         return Err("Invalid product status.".to_string());
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| {
+            format!("Could not start product update: {}", error)
+        })?;
+
+    let item_id = sqlx::query_scalar::<_, Option<u64>>(
+        "SELECT item_id FROM products WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| {
+        format!("Could not retrieve linked catalog item: {}", error)
+    })?
+    .flatten();
+
+    // Keep the catalog identity and product identity synchronized.
+    if let Some(item_id) = item_id {
+        sqlx::query(
+            r#"
+            UPDATE items
+            SET
+                item_name = ?,
+                sku = ?,
+                barcode = ?,
+                description = ?,
+                category = ?,
+                unit = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&product_name)
+        .bind(&sku)
+        .bind(&barcode)
+        .bind(&description)
+        .bind(&category)
+        .bind(&unit)
+        .bind(item_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| {
+            format!("Could not update catalog item: {}", error)
+        })?;
     }
 
     let result = sqlx::query(
@@ -196,40 +374,54 @@ pub async fn update_product(
             minimum_stock = ?,
             status = ?
         WHERE id = ?
-        "#
+        "#,
     )
-    .bind(product_name.trim())
-    .bind(clean_optional(sku))
-    .bind(clean_optional(barcode))
-    .bind(clean_optional(description))
-    .bind(clean_optional(category))
+    .bind(&product_name)
+    .bind(&sku)
+    .bind(&barcode)
+    .bind(&description)
+    .bind(&category)
     .bind(cost_price)
     .bind(selling_price)
-    .bind(unit)
+    .bind(&unit)
     .bind(quantity)
     .bind(minimum_stock)
-    .bind(status)
+    .bind(&status)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
-    .map_err(|error| format!("Could not update product: {}", error))?;
+    .map_err(|error| {
+        format!("Could not update product: {}", error)
+    })?;
 
     if result.rows_affected() == 0 {
         return Err("Product not found.".to_string());
     }
 
+    tx.commit()
+        .await
+        .map_err(|error| {
+            format!("Could not finish product update: {}", error)
+        })?;
+
     Ok(())
 }
+
+// DELETE PRODUCT
 
 pub async fn delete_product(
     pool: &MySqlPool,
     id: u64,
 ) -> Result<(), String> {
-    let result = sqlx::query("DELETE FROM products WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(|error| format!("Could not delete product: {}", error))?;
+    let result = sqlx::query(
+        "DELETE FROM products WHERE id = ?"
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|error| {
+        format!("Could not delete product: {}", error)
+    })?;
 
     if result.rows_affected() == 0 {
         return Err("Product not found.".to_string());

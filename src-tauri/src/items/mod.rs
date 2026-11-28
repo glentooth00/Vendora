@@ -201,3 +201,33 @@ pub async fn get_item_summary(
     .await
     .map_err(|e| format!("Could not load item summary: {}", e))
 }
+
+
+pub async fn get_available_items(
+    pool: &MySqlPool,
+) -> Result<Vec<Item>, String> {
+    sqlx::query_as::<_, Item>(
+        r#"
+        SELECT
+            i.id,
+            i.item_name,
+            i.sku,
+            i.barcode,
+            i.description,
+            i.category,
+            i.unit,
+            i.status
+        FROM items i
+        LEFT JOIN products p ON p.item_id = i.id
+        WHERE i.status = 'active'
+          AND p.id IS NULL
+        ORDER BY i.item_name ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|error| {
+        format!("Could not load available catalog items: {}", error)
+    })
+}
+
