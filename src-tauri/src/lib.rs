@@ -3,6 +3,7 @@ mod auth;
 mod database;
 mod products;
 mod sales;
+mod items;
 
 use rust_decimal::Decimal;
 use sqlx::MySqlPool;
@@ -225,7 +226,10 @@ pub fn run() {
             has_admin_account,
             create_initial_admin,
             login_user,
-            
+            get_items,
+            add_item,
+            update_item,
+            get_item_summary,
             get_products,
             add_product,
             update_product,
@@ -238,3 +242,40 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Vendora");
 }
+
+
+
+ // ITEM CATALOG
+
+#[tauri::command]
+async fn get_items(
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<Vec<items::Item>, String> {
+    items::get_items(pool.inner()).await
+}
+
+#[tauri::command]
+async fn add_item(
+    item: items::ItemInput,
+    created_by: Option<u64>,
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<u64, String> {
+    items::add_item(pool.inner(), item, created_by).await
+}
+
+#[tauri::command]
+async fn update_item(
+    id: u64,
+    item: items::ItemInput,
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<(), String> {
+    items::update_item(pool.inner(), id, item).await
+}
+
+#[tauri::command]
+async fn get_item_summary(
+    pool: tauri::State<'_, MySqlPool>,
+) -> Result<items::ItemSummary, String> {
+    items::get_item_summary(pool.inner()).await
+}
+

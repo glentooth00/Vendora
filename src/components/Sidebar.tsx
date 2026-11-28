@@ -10,6 +10,7 @@ interface SidebarProps {
 
 const workspaceNavigation = [
   { name: "Dashboard", icon: "▦" },
+  { name: "Item Catalog", icon: "▤" },
   { name: "Products", icon: "▣" },
   { name: "Inventory", icon: "▤" },
   { name: "Sales", icon: "▥" },
