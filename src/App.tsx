@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AuthenticatedUser } from "./types";
 
+import Items from "./pages/Items";
 import DashboardLayout from "./layouts/DashboardLayout";
 import Dashboard from "./pages/Dashboard";
 import ModulePlaceholder from "./pages/ModulePlaceholder";
@@ -375,19 +376,21 @@ function App() {
           onLogout={handleLogout}
         >
       {activePage === "Sales" ? (
-          <Sales user={user} />
-        ) : activePage === "Dashboard" ? (
-          <Dashboard user={user} onNavigate={setActivePage} />
-        ) : activePage === "Products" ? (
-          <Products user={user} />
-        ) : activePage === "Inventory" ? (
-          <Inventory />
-        ) : (
-          <ModulePlaceholder
-            page={activePage}
-            onBack={() => setActivePage("Dashboard")}
-          />
-        )}
+        <Sales user={user} />
+      ) : activePage === "Dashboard" ? (
+        <Dashboard user={user} onNavigate={setActivePage} />
+      ) : activePage === "Item Catalog" ? (
+        <Items user={user} />
+      ) : activePage === "Products" ? (
+        <Products user={user} />
+      ) : activePage === "Inventory" ? (
+        <Inventory />
+      ) : (
+        <ModulePlaceholder
+          page={activePage}
+          onBack={() => setActivePage("Dashboard")}
+        />
+      )}
         </DashboardLayout>
       )}
     </main>
