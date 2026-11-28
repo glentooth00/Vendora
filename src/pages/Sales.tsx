@@ -113,7 +113,7 @@ interface SaleHistory {
   receipt_no: string;
   sale_time: string;
   item_count: number;
-  product_name: string | null;
+  item_names: string | null;
   total_amount: number;
   payment_method: string | null;
   status: string | null;
@@ -232,7 +232,7 @@ const filteredTodaySales = useMemo(() => {
   return todaySales.filter((sale) => {
     const searchableText = [
       sale.receipt_no,
-      sale.product_name ?? "",
+      sale.item_names ?? "",
       sale.payment_method ?? "",
       sale.status ?? "",
       sale.sale_time,
